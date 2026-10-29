@@ -1,6 +1,6 @@
 --[[
 	==========================================================================
-	CINDORA UI LIBRARY  v1.0
+	CINDORA UI LIBRARY  v1.1
 	==========================================================================
 
 	USO RÁPIDO
@@ -36,7 +36,23 @@
 	Section:AddButton  { Name, Callback }
 	Section:AddInfo / AddLabel (texto)
 
+	Section:AddColorPicker { Name, Default (Color3), Sub, Flag, Callback(Color3) }
+	Section:AddParagraph   { Title, Text }  ou  AddParagraph("texto longo")
+	Section:AddDivider(texto opcional)
+	Toggle com tecla: AddToggle { Name, Keybind = { Default = Enum.KeyCode.X, Flag = "k" } }
+	Dica ao passar o mouse: qualquer componente aceita Tip = "texto"
+	Slider: clique no número para digitar o valor exato
+
 	Todo componente retorna um objeto com :Get() :Set(v, silent) :SetVisible(bool) :Destroy()
+
+	NOVIDADES v1.1
+	--------------
+	CreateWindow: Theme = "Midnight", Font = "Gotham", Scale = 1, AutoLoad = true
+	Key = { Api = "https://seu-servidor/check?key={key}" }  -> valida a key no seu servidor
+	Window:AddTab(nome, { Icon = "rbxassetid://..." })
+	Window:Notify(titulo, texto, duracao, "success"|"error"|"warning"|"info")
+	Window:SetTheme("Midnight"|"Forest"|"Crimson"|"Violet"|"Sunset"|"Dark")
+	Window:ExportConfig() / ImportConfig(texto) / SetAutoLoad(nome) / LoadAutoConfig()
 
 	JANELA
 	------
@@ -64,7 +80,7 @@ local lp = Players.LocalPlayer
 local playerGui = lp:WaitForChild("PlayerGui")
 
 local Cindora = {}
-Cindora.Version = "1.0"
+Cindora.Version = "1.1"
 Cindora.Windows = {}
 
 -- Textos da interface (edite para traduzir)
@@ -80,6 +96,10 @@ Cindora.Text = {
 	ConfigNone = "No config selected.",
 	ConfigReset = "Everything went back to default.",
 	PositionReset = "Position reset.",
+	ExportCopied = "Config copied to clipboard.",
+	ClipboardMissing = "Clipboard not supported by this executor.",
+	ImportOK = "Config imported.",
+	ImportFail = "Invalid config text.",
 }
 
 local DEFAULT_LOGO = "rbxassetid://76965955959642"
@@ -92,6 +112,16 @@ Cindora.AccentColors = {
 	Blue   = Color3.fromRGB(40, 110, 230),
 	Purple = Color3.fromRGB(140, 70, 220),
 	Pink   = Color3.fromRGB(230, 70, 160),
+}
+
+-- Temas completos (Main = fundo da janela, Row = fundo dos itens, Text = cor do texto)
+Cindora.Themes = {
+	Dark     = { Accent = "Black",  Main = Color3.fromRGB(0, 0, 0),  Row = Color3.fromRGB(0, 0, 0),   Text = Color3.fromRGB(232, 236, 230) },
+	Midnight = { Accent = "Blue",   Main = Color3.fromRGB(6, 8, 24), Row = Color3.fromRGB(10, 14, 40), Text = Color3.fromRGB(225, 232, 250) },
+	Forest   = { Accent = "Green",  Main = Color3.fromRGB(4, 16, 8), Row = Color3.fromRGB(8, 28, 14),  Text = Color3.fromRGB(225, 245, 230) },
+	Crimson  = { Accent = "Red",    Main = Color3.fromRGB(20, 2, 4), Row = Color3.fromRGB(36, 6, 10),  Text = Color3.fromRGB(250, 230, 232) },
+	Violet   = { Accent = "Purple", Main = Color3.fromRGB(12, 4, 22), Row = Color3.fromRGB(22, 8, 40), Text = Color3.fromRGB(240, 230, 252) },
+	Sunset   = { Accent = "Orange", Main = Color3.fromRGB(22, 10, 2), Row = Color3.fromRGB(40, 20, 6), Text = Color3.fromRGB(252, 240, 225) },
 }
 
 ------------------------------------------------------------------
@@ -213,6 +243,31 @@ local function safeName(s)
 	return (string.gsub(tostring(s), "[^%w_%-]", "_"))
 end
 
+local NOTIFY_COLORS = {
+	success = Color3.fromRGB(80, 220, 110),
+	error = Color3.fromRGB(235, 75, 85),
+	warning = Color3.fromRGB(245, 185, 50),
+}
+
+local function colorToHex(c)
+	return string.format("#%02X%02X%02X", math.round(c.R * 255), math.round(c.G * 255), math.round(c.B * 255))
+end
+
+local function hexToColor(str)
+	local hex = (tostring(str):gsub("#", ""))
+	if #hex == 6 then
+		local r, g, b = tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16)
+		if r and g and b then
+			return Color3.fromRGB(r, g, b)
+		end
+	end
+	return nil
+end
+
+local function dummyCtrl()
+	return setmetatable({}, { __index = function() return function() end end })
+end
+
 local function escapeRich(s)
 	return (tostring(s):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
 end
@@ -234,6 +289,24 @@ end
 -- Sistema de key
 ------------------------------------------------------------------
 local function validateKey(K, input)
+	if K.Api then
+		local ok, body = pcall(function()
+			local url = string.gsub(K.Api, "{key}", function()
+				return HttpService:UrlEncode(input)
+			end)
+			return game:HttpGet(url)
+		end)
+		if not ok or type(body) ~= "string" then
+			return false
+		end
+		local okJ, data = pcall(function()
+			return HttpService:JSONDecode(body)
+		end)
+		if okJ and type(data) == "table" then
+			return data.valid == true or data.success == true
+		end
+		return string.lower(body):match("^%s*true%s*$") ~= nil
+	end
 	local k = K.Key
 	if type(k) == "function" then
 		local ok, res = pcall(k, input)
@@ -787,7 +860,12 @@ local function showKeyMenu(opts, parent, onDone)
 			return
 		end
 		local entered = textBox.Text
-		if validateKey(K, entered) then
+		busy = true
+		if K.Api then
+			setStatus("Checking key...", C_INFO)
+		end
+		local valid = validateKey(K, entered)
+		if valid then
 			busy = true
 			setStatus("Key verified! Loading...", C_OK)
 			saveVerification(K, remember, entered)
@@ -796,6 +874,7 @@ local function showKeyMenu(opts, parent, onDone)
 				onDone(true, os.time())
 			end)
 		else
+			busy = false
 			setStatus("Invalid key! Please check case and spaces.", C_ERR)
 			task.spawn(function()
 				local o = inputBox.Position
@@ -848,11 +927,30 @@ function Cindora:CreateWindow(opts)
 	local parentGui = opts.Parent or playerGui
 	local L = Cindora.Text
 
+	-- Fonte configurável (Font = "Gotham", "Ubuntu", "Roboto"...)
+	do
+		local fb, fbi, fm
+		if type(opts.Font) == "string" and opts.Font ~= "" then
+			local okF = pcall(function()
+				fb = Font.fromName(opts.Font, Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+				fbi = Font.fromName(opts.Font, Enum.FontWeight.Bold, Enum.FontStyle.Italic)
+				fm = Font.fromName(opts.Font, Enum.FontWeight.Medium, Enum.FontStyle.Normal)
+			end)
+			if not okF then
+				warn("[Cindora] Invalid font: " .. tostring(opts.Font))
+				fb, fbi, fm = nil, nil, nil
+			end
+		end
+		FBold = fb or Font.new(FAMILY, Enum.FontWeight.Bold, Enum.FontStyle.Normal)
+		FBoldItalic = fbi or Font.new(FAMILY, Enum.FontWeight.Bold, Enum.FontStyle.Italic)
+		FMedium = fm or Font.new(FAMILY, Enum.FontWeight.Medium, Enum.FontStyle.Normal)
+	end
+
 	------------------------------------------------------------
 	-- Key + splash
 	------------------------------------------------------------
 	local keyCfg = opts.Key
-	local keyEnabled = type(keyCfg) == "table" and keyCfg.Enabled ~= false and keyCfg.Key ~= nil
+	local keyEnabled = type(keyCfg) == "table" and keyCfg.Enabled ~= false and (keyCfg.Key ~= nil or keyCfg.Api ~= nil)
 	local keyTs
 	local folder = opts.Folder or safeName(name)
 
@@ -886,6 +984,10 @@ function Cindora:CreateWindow(opts)
 	------------------------------------------------------------
 	local vp = workspace.CurrentCamera.ViewportSize
 	local S = math.clamp(math.min(vp.X / 400, vp.Y / 250), 0.9, 1.5)
+	if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+		S = math.min(S * 1.1, 1.6) -- botões um pouco maiores no celular
+	end
+	S = math.clamp(S * (tonumber(opts.Scale) or 1), 0.6, 2)
 	local function u(n)
 		return math.max(1, math.floor(n * S + 0.5))
 	end
@@ -938,6 +1040,26 @@ function Cindora:CreateWindow(opts)
 		line = buildSeq("line", Cindora.AccentColors.Black),
 	}
 	local Themed = {}
+	local Theme = { Main = BLACK, Row = BLACK, Text = TEXT }
+
+	-- aplica as cores do tema atual em elementos recém-criados
+	local function recolor(inst)
+		if Theme.Row == BLACK and Theme.Text == TEXT then
+			return
+		end
+		local list = inst:GetDescendants()
+		table.insert(list, inst)
+		for _, d in ipairs(list) do
+			if d:IsA("GuiObject") then
+				if Theme.Row ~= BLACK and d.BackgroundColor3 == BLACK then
+					d.BackgroundColor3 = Theme.Row
+				end
+				if Theme.Text ~= TEXT and (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and d.TextColor3 == TEXT then
+					d.TextColor3 = Theme.Text
+				end
+			end
+		end
+	end
 
 	local function gradient(parent, seq, rot, kind)
 		local g = create("UIGradient", { Color = kind and CurSeqs[kind] or seq, Rotation = rot or 90 }, parent)
@@ -965,7 +1087,7 @@ function Cindora:CreateWindow(opts)
 		end
 	end
 
-	local function makeDraggable(handle, target)
+	local function makeDraggable(handle, target, clamp)
 		local dragging, dragStart, startPos
 		handle.InputBegan:Connect(function(input)
 			if isPress(input) then
@@ -982,7 +1104,15 @@ function Cindora:CreateWindow(opts)
 		connect(UIS.InputChanged, function(input)
 			if dragging and isMove(input) then
 				local d = input.Position - dragStart
-				target.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+				local px, py = startPos.X.Offset + d.X, startPos.Y.Offset + d.Y
+				if clamp then
+					local vs = workspace.CurrentCamera.ViewportSize
+					local cx = math.clamp(startPos.X.Scale * vs.X + px, 60, math.max(61, vs.X - 60))
+					local cy = math.clamp(startPos.Y.Scale * vs.Y + py, 30, math.max(31, vs.Y - 30))
+					px = cx - startPos.X.Scale * vs.X
+					py = cy - startPos.Y.Scale * vs.Y
+				end
+				target.Position = UDim2.new(startPos.X.Scale, px, startPos.Y.Scale, py)
 			end
 		end)
 	end
@@ -1172,7 +1302,7 @@ function Cindora:CreateWindow(opts)
 	end
 	local closeBtn = titleBtn("X", u(1.5))
 	local minBtn, minLabel = titleBtn("–", u(20.5))
-	makeDraggable(titleBar, root)
+	makeDraggable(titleBar, root, true)
 
 	-- Painel de pesquisa
 	local searchPanel = create("Frame", {
@@ -1221,6 +1351,34 @@ function Cindora:CreateWindow(opts)
 	searchBox.Focused:Connect(function() tw(searchStroke, 0.15, { Transparency = 0.2 }) end)
 	searchBox.FocusLost:Connect(function() tw(searchStroke, 0.15, { Transparency = 1 }) end)
 
+	function Window:SetTheme(t)
+		local th = type(t) == "table" and t or Cindora.Themes[t]
+		if not th then
+			return
+		end
+		local old = Theme
+		Theme = { Main = th.Main or BLACK, Row = th.Row or BLACK, Text = th.Text or TEXT }
+		main.BackgroundColor3 = Theme.Main
+		searchPanel.BackgroundColor3 = Theme.Main
+		for _, d in ipairs(gui:GetDescendants()) do
+			if d ~= main and d ~= searchPanel and d:IsA("GuiObject") then
+				if d.BackgroundColor3 == old.Row then
+					d.BackgroundColor3 = Theme.Row
+				end
+				if (d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox")) and d.TextColor3 == old.Text then
+					d.TextColor3 = Theme.Text
+				end
+			end
+		end
+		if th.Accent then
+			Window:SetAccent(th.Accent)
+			local ao = Window.Options._uiAccent
+			if ao and type(th.Accent) == "string" then
+				ao:Set(th.Accent, true)
+			end
+		end
+	end
+
 	-- Alça de redimensionar
 	local G = u(10)
 	local grip = create("TextButton", {
@@ -1263,7 +1421,10 @@ function Cindora:CreateWindow(opts)
 		connect(UIS.InputChanged, function(input)
 			if resizing and isMove(input) then
 				local d = (input.Position - startMouse) / userScale.Scale
-				setWinSize(math.max(u(200), startW + d.X), math.max(u(150), startH + d.Y))
+				local vpn = workspace.CurrentCamera.ViewportSize
+				local maxW = math.max(u(200), vpn.X / userScale.Scale - LEFT - RIGHT - u(10))
+				local maxH = math.max(u(150), vpn.Y / userScale.Scale - u(10))
+				setWinSize(math.clamp(startW + d.X, u(200), maxW), math.clamp(startH + d.Y, u(150), maxH))
 			end
 		end)
 	end
@@ -1296,8 +1457,8 @@ function Cindora:CreateWindow(opts)
 			end
 		end
 		currentTab = tab
-		tab.Page.Position = UDim2.fromOffset(0, TITLE_H + u(10))
-		tw(tab.Page, 0.22, { Position = UDim2.fromOffset(0, TITLE_H) })
+		tab.Page.Position = UDim2.fromOffset(0, TITLE_H + u(14))
+		tw(tab.Page, 0.3, { Position = UDim2.fromOffset(0, TITLE_H) }, Enum.EasingStyle.Quint)
 		applyFilter()
 	end
 
@@ -1339,7 +1500,7 @@ function Cindora:CreateWindow(opts)
 	create("UIListLayout", { Padding = UDim.new(0, u(4)), SortOrder = Enum.SortOrder.LayoutOrder }, notifHolder)
 
 	local notifCount = 0
-	function Window:Notify(title, text, duration)
+	function Window:Notify(title, text, duration, kind)
 		notifCount += 1
 		local slot = create("Frame", {
 			LayoutOrder = notifCount,
@@ -1362,7 +1523,12 @@ function Cindora:CreateWindow(opts)
 			BorderSizePixel = 0,
 		}, toast)
 		corner(bar, 2)
-		gradient(bar, nil, 90, "title")
+		local kc = NOTIFY_COLORS[kind]
+		if kc then
+			bar.BackgroundColor3 = kc
+		else
+			gradient(bar, nil, 90, "title")
+		end
 		create("TextLabel", {
 			BackgroundTransparency = 1,
 			Position = UDim2.fromOffset(u(8), u(3)),
@@ -1385,6 +1551,7 @@ function Cindora:CreateWindow(opts)
 			TextTruncate = Enum.TextTruncate.AtEnd,
 		}, toast)
 
+		recolor(toast)
 		tw(toast, 0.28, { Position = UDim2.new(0, 0, 0, 0) }, Enum.EasingStyle.Back)
 		task.delay(duration or 3, function()
 			if not slot.Parent then return end
@@ -1397,6 +1564,70 @@ function Cindora:CreateWindow(opts)
 	------------------------------------------------------------
 	-- Registro de componentes
 	------------------------------------------------------------
+	-- Tooltips (dica ao passar o mouse)
+	local tipFrame = create("Frame", {
+		Name = "Tooltip",
+		Visible = false,
+		AutomaticSize = Enum.AutomaticSize.XY,
+		Size = UDim2.fromOffset(0, 0),
+		BackgroundColor3 = BLACK,
+		BackgroundTransparency = 0.1,
+		BorderSizePixel = 0,
+		ZIndex = 200,
+	}, gui)
+	corner(tipFrame, 3)
+	stroke(tipFrame, Color3.fromRGB(70, 70, 78), 1, 0.2)
+	create("UIPadding", {
+		PaddingLeft = UDim.new(0, u(4)),
+		PaddingRight = UDim.new(0, u(4)),
+		PaddingTop = UDim.new(0, u(3)),
+		PaddingBottom = UDim.new(0, u(3)),
+	}, tipFrame)
+	local tipLabel = create("TextLabel", {
+		AutomaticSize = Enum.AutomaticSize.XY,
+		Size = UDim2.fromOffset(0, 0),
+		BackgroundTransparency = 1,
+		FontFace = FMedium,
+		Text = "",
+		TextColor3 = WHITE,
+		TextSize = u(6),
+		ZIndex = 201,
+	}, tipFrame)
+	local tipToken, tipActive = 0, false
+	local function addTip(obj, text)
+		if not UIS.MouseEnabled then
+			return
+		end
+		obj.MouseEnter:Connect(function()
+			tipToken += 1
+			local mine = tipToken
+			task.delay(0.4, function()
+				if mine == tipToken then
+					tipLabel.Text = text
+					tipFrame.Visible = true
+					tipActive = true
+				end
+			end)
+		end)
+		obj.MouseLeave:Connect(function()
+			tipToken += 1
+			tipFrame.Visible = false
+			tipActive = false
+		end)
+	end
+	connect(RunService.RenderStepped, function()
+		if not tipActive then
+			return
+		end
+		local m = UIS:GetMouseLocation()
+		local vs = workspace.CurrentCamera.ViewportSize
+		local sz = tipFrame.AbsoluteSize
+		tipFrame.Position = UDim2.fromOffset(
+			math.clamp(m.X + 14, 4, math.max(5, vs.X - sz.X - 4)),
+			math.clamp(m.Y + 18, 4, math.max(5, vs.Y - sz.Y - 4))
+		)
+	end)
+
 	local function registerFlag(flag, getter, setter, default, ctrl)
 		if flag then
 			Registry[flag] = { get = getter, set = setter, default = deepCopy(default) }
@@ -1411,6 +1642,7 @@ function Cindora:CreateWindow(opts)
 
 	local function finish(ctrl, holder, cname, page, flag, getter, setter, default)
 		local entry = { holder = holder, name = cname, page = page, hidden = false }
+		recolor(holder)
 		table.insert(Features, entry)
 		ctrl.Holder = holder
 		function ctrl:SetVisible(v)
@@ -1629,14 +1861,79 @@ function Cindora:CreateWindow(opts)
 		function Sec:AddToggle(o)
 			local height = o.Desc and u(27) or u(21)
 			local ts = o.TitleSize or (o.Desc and Sec.TitleSize - 1.2 or Sec.TitleSize)
+			local kb = nil
+			if type(o.Keybind) == "table" then
+				kb = o.Keybind
+			elseif o.Keybind == true then
+				kb = {}
+			end
+			local keyReserve = kb and (u(30) + u(5)) or 0
 			local holder, row = makeRow(container, nextOrder(), height, o.Sub and u(13) or 0, o.Sub and u(12) or 0)
-			rowText(row, o.Name, o.Desc, height, o.Sub and u(5) or u(7), u(50), ts)
+			rowText(row, o.Name, o.Desc, height, o.Sub and u(5) or u(7), u(50) + keyReserve, ts)
 			local P = makePill(row, o.Default or false, function(v)
 				safeCallback(o.Callback, v)
 			end)
 			local T = {}
 			function T:Set(v, silent) P:Set(v, silent) end
 			function T:Get() return P:Get() end
+
+			if kb then
+				local key = kb.Default
+				if type(key) == "string" then
+					local okk, kc = pcall(function() return Enum.KeyCode[key] end)
+					key = okk and kc or nil
+				end
+				local kbox = create("TextButton", {
+					AnchorPoint = Vector2.new(1, 0.5),
+					Position = UDim2.new(1, -(u(3.5) + u(34) + u(4)), 0.5, 0),
+					Size = UDim2.fromOffset(u(30), u(13)),
+					BackgroundColor3 = BLACK,
+					BackgroundTransparency = 0.3,
+					AutoButtonColor = false,
+					FontFace = FBold,
+					Text = key and key.Name or "None",
+					TextColor3 = WHITE,
+					TextSize = u(5.5),
+					TextTruncate = Enum.TextTruncate.AtEnd,
+				}, row)
+				corner(kbox, 2)
+				stroke(kbox, BLACK, 1, 0.4)
+				hoverScale(kbox, 1.05, 0.95)
+
+				function T:SetKey(k, silent)
+					if type(k) == "string" then
+						local okk, kc = pcall(function() return Enum.KeyCode[k] end)
+						k = okk and kc or nil
+					end
+					key = (typeof(k) == "EnumItem" and k.EnumType == Enum.KeyCode) and k or nil
+					kbox.Text = key and key.Name or "None"
+					kbox.TextColor3 = WHITE
+					if not silent then safeCallback(kb.Callback, key) end
+				end
+				function T:GetKey() return key end
+
+				kbox.MouseButton1Click:Connect(function()
+					kbox.Text = "..."
+					kbox.TextColor3 = GREEN_T
+					capture = function(k)
+						if k == Enum.KeyCode.Escape then
+							T:SetKey(key, true)
+						elseif k == Enum.KeyCode.Backspace then
+							T:SetKey(nil)
+						else
+							T:SetKey(k)
+						end
+					end
+				end)
+
+				table.insert(Keybinds, {
+					get = function() return key end,
+					pressed = function() P:Set(not P:Get()) end,
+					holder = holder,
+				})
+				registerFlag(kb.Flag, function() return key and key.Name or "" end, function(v) T:SetKey(v) end, key and key.Name or "")
+			end
+
 			return finish(T, holder, o.Name, page, o.Flag, function() return P:Get() end, function(v) P:Set(v) end, P:Get())
 		end
 
@@ -1670,7 +1967,8 @@ function Cindora:CreateWindow(opts)
 				TextXAlignment = Enum.TextXAlignment.Left,
 				TextTruncate = Enum.TextTruncate.AtEnd,
 			}, row)
-			local valueLabel = create("TextLabel", {
+			local valueLabel = create("TextBox", {
+				ClearTextOnFocus = false,
 				BackgroundTransparency = 1,
 				AnchorPoint = Vector2.new(1, 0),
 				Position = UDim2.new(1, -(trackW + trackMarginR + u(3)), 0, 0),
@@ -1755,6 +2053,18 @@ function Cindora:CreateWindow(opts)
 			end)
 
 			render(false)
+			valueLabel.Focused:Connect(function()
+				valueLabel.Text = tostring(value)
+			end)
+			valueLabel.FocusLost:Connect(function()
+				local n = tonumber(valueLabel.Text)
+				if n then
+					Sl:Set(n)
+				else
+					render(false)
+				end
+			end)
+
 			return finish(Sl, holder, o.Name, page, o.Flag, function() return value end, function(v) Sl:Set(v) end, value)
 		end
 
@@ -2160,6 +2470,290 @@ function Cindora:CreateWindow(opts)
 			return finish(K, holder, o.Name, page, o.Flag, function() return key.Name end, function(v) K:Set(v) end, key.Name)
 		end
 
+		-- Color Picker
+		function Sec:AddColorPicker(o)
+			local rowH = u(21)
+			local holder, row = makeRow(container, nextOrder(), rowH, o.Sub and u(13) or 0, o.Sub and u(12) or 0)
+			holder.ClipsDescendants = true
+			rowText(row, o.Name, nil, rowH, o.Sub and u(5) or u(7), u(44), o.TitleSize or Sec.TitleSize)
+
+			local start = typeof(o.Default) == "Color3" and o.Default or Color3.fromRGB(255, 255, 255)
+			local h, s, v = start:ToHSV()
+
+			local swatch = create("TextButton", {
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, -u(4), 0.5, 0),
+				Size = UDim2.fromOffset(u(32), u(14)),
+				BackgroundColor3 = start,
+				AutoButtonColor = false,
+				Text = "",
+			}, row)
+			corner(swatch, 2)
+			stroke(swatch, Color3.fromRGB(235, 235, 240), 1, 0.5)
+			hoverScale(swatch, 1.05, 0.95)
+
+			local PANEL_H = u(74)
+			local svH = PANEL_H - u(8)
+			local panel = create("Frame", {
+				Position = UDim2.fromOffset(0, rowH + u(2)),
+				Size = UDim2.new(1, 0, 0, 0),
+				BackgroundColor3 = BLACK,
+				BackgroundTransparency = 0.3,
+				BorderSizePixel = 0,
+				ClipsDescendants = true,
+			}, holder)
+			corner(panel, 2)
+			stroke(panel, BLACK, 1, 0.25)
+
+			local SV_BLACK = Color3.fromRGB(1, 1, 1)
+			local sv = create("Frame", {
+				Position = UDim2.fromOffset(u(4), u(4)),
+				Size = UDim2.new(1, -(u(4) + u(10) + u(4) + u(4)), 0, svH),
+				BackgroundColor3 = Color3.fromHSV(h, 1, 1),
+				BorderSizePixel = 0,
+			}, panel)
+			corner(sv, 2)
+			local white = create("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, sv)
+			corner(white, 2)
+			create("UIGradient", { Transparency = NumberSequence.new(0, 1) }, white)
+			local black = create("Frame", { Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = SV_BLACK, BorderSizePixel = 0 }, sv)
+			corner(black, 2)
+			create("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(1, 0) }, black)
+
+			local svCursor = create("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Size = UDim2.fromOffset(u(6), u(6)),
+				BackgroundTransparency = 1,
+				ZIndex = 4,
+			}, sv)
+			corner(svCursor, 99)
+			stroke(svCursor, WHITE, 1.5)
+			local svInput = create("TextButton", {
+				Size = UDim2.new(1, 0, 1, 0),
+				BackgroundTransparency = 1,
+				Text = "",
+				ZIndex = 5,
+			}, sv)
+
+			local hue = create("Frame", {
+				AnchorPoint = Vector2.new(1, 0),
+				Position = UDim2.new(1, -u(4), 0, u(4)),
+				Size = UDim2.fromOffset(u(10), svH),
+				BackgroundColor3 = WHITE,
+				BorderSizePixel = 0,
+			}, panel)
+			corner(hue, 2)
+			local seq = {}
+			for i = 0, 6 do
+				table.insert(seq, ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(math.min(i / 6, 0.9999), 1, 1)))
+			end
+			create("UIGradient", { Rotation = 90, Color = ColorSequence.new(seq) }, hue)
+			local hueCursor = create("Frame", {
+				AnchorPoint = Vector2.new(0, 0.5),
+				Size = UDim2.new(1, 0, 0, 2),
+				BackgroundColor3 = WHITE,
+				BorderSizePixel = 0,
+				ZIndex = 4,
+			}, hue)
+			stroke(hueCursor, Color3.fromRGB(20, 20, 20), 1)
+			local hueInput = create("TextButton", {
+				Size = UDim2.new(1, 0, 1, 0),
+				BackgroundTransparency = 1,
+				Text = "",
+				ZIndex = 5,
+			}, hue)
+
+			local function apply(silent)
+				local c = Color3.fromHSV(h, s, v)
+				swatch.BackgroundColor3 = c
+				sv.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
+				svCursor.Position = UDim2.new(s, 0, 1 - v, 0)
+				hueCursor.Position = UDim2.new(0, 0, h, 0)
+				if not silent then
+					safeCallback(o.Callback, c)
+				end
+			end
+
+			local inset = game:GetService("GuiService"):GetGuiInset().Y
+			local dragSV, dragH = false, false
+			local function updSV(input)
+				s = math.clamp((input.Position.X - sv.AbsolutePosition.X) / math.max(1, sv.AbsoluteSize.X), 0, 1)
+				v = 1 - math.clamp((input.Position.Y + inset - sv.AbsolutePosition.Y) / math.max(1, sv.AbsoluteSize.Y), 0, 1)
+				apply()
+			end
+			local function updH(input)
+				h = math.clamp((input.Position.Y + inset - hue.AbsolutePosition.Y) / math.max(1, hue.AbsoluteSize.Y), 0, 1)
+				apply()
+			end
+			svInput.InputBegan:Connect(function(input)
+				if isPress(input) then
+					dragSV = true
+					updSV(input)
+				end
+			end)
+			hueInput.InputBegan:Connect(function(input)
+				if isPress(input) then
+					dragH = true
+					updH(input)
+				end
+			end)
+			connect(UIS.InputEnded, function(input)
+				if isPress(input) then
+					dragSV, dragH = false, false
+				end
+			end)
+			connect(UIS.InputChanged, function(input)
+				if isMove(input) then
+					if dragSV then
+						updSV(input)
+					elseif dragH then
+						updH(input)
+					end
+				end
+			end)
+
+			local openCP = false
+			swatch.MouseButton1Click:Connect(function()
+				openCP = not openCP
+				tw(holder, 0.2, { Size = UDim2.new(1, 0, 0, openCP and (rowH + u(2) + PANEL_H) or rowH) })
+				tw(panel, 0.2, { Size = UDim2.new(1, 0, 0, openCP and PANEL_H or 0) })
+			end)
+
+			local CP = {}
+			function CP:Get() return Color3.fromHSV(h, s, v) end
+			function CP:Set(c, silent)
+				if type(c) == "string" then c = hexToColor(c) end
+				if typeof(c) ~= "Color3" then return end
+				h, s, v = c:ToHSV()
+				apply(silent)
+			end
+
+			apply(true)
+			return finish(CP, holder, o.Name, page, o.Flag, function() return colorToHex(CP:Get()) end, function(val) CP:Set(val) end, colorToHex(start))
+		end
+
+		-- Parágrafo (texto longo com quebra de linha)
+		function Sec:AddParagraph(o)
+			if type(o) == "string" then o = { Text = o } end
+			local holder = create("Frame", {
+				LayoutOrder = nextOrder(),
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+			}, container)
+			local row = create("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundColor3 = BLACK,
+				BackgroundTransparency = 0.38,
+				BorderSizePixel = 0,
+			}, holder)
+			corner(row, 2)
+			stroke(row, BLACK, 1, 0.25)
+			create("UIPadding", {
+				PaddingTop = UDim.new(0, u(4)),
+				PaddingBottom = UDim.new(0, u(4)),
+				PaddingLeft = UDim.new(0, u(7)),
+				PaddingRight = UDim.new(0, u(7)),
+			}, row)
+			create("UIListLayout", { Padding = UDim.new(0, u(2)), SortOrder = Enum.SortOrder.LayoutOrder }, row)
+			if o.Title then
+				create("TextLabel", {
+					LayoutOrder = 1,
+					Size = UDim2.new(1, 0, 0, u(11)),
+					BackgroundTransparency = 1,
+					FontFace = FBold,
+					Text = tostring(o.Title),
+					TextColor3 = TEXT,
+					TextSize = u(8.5),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+				}, row)
+			end
+			local body = create("TextLabel", {
+				LayoutOrder = 2,
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				BackgroundTransparency = 1,
+				FontFace = FMedium,
+				Text = tostring(o.Text or ""),
+				TextColor3 = DESC,
+				TextSize = u(6.5),
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextYAlignment = Enum.TextYAlignment.Top,
+			}, row)
+			local Pg = {}
+			function Pg:Set(txt) body.Text = tostring(txt) end
+			function Pg:Get() return body.Text end
+			return finish(Pg, holder, tostring(o.Title or o.Text or ""), page)
+		end
+
+		-- Separador / título de grupo
+		function Sec:AddDivider(text)
+			local holder = create("Frame", {
+				LayoutOrder = nextOrder(),
+				Size = UDim2.new(1, 0, 0, u(12)),
+				BackgroundTransparency = 1,
+			}, container)
+			local lineColor = Color3.fromRGB(70, 70, 78)
+			if text and text ~= "" then
+				local lbl = create("TextLabel", {
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					Position = UDim2.fromScale(0.5, 0.5),
+					AutomaticSize = Enum.AutomaticSize.X,
+					Size = UDim2.fromOffset(0, u(12)),
+					BackgroundTransparency = 1,
+					FontFace = FBold,
+					Text = tostring(text),
+					TextColor3 = GRAYTXT,
+					TextSize = u(6.5),
+				}, holder)
+				local left = create("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0), BackgroundColor3 = lineColor, BorderSizePixel = 0 }, holder)
+				local right = create("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), BackgroundColor3 = lineColor, BorderSizePixel = 0 }, holder)
+				local function place()
+					local half = lbl.TextBounds.X / 2 + u(5)
+					left.Size = UDim2.new(0.5, -half, 0, 1)
+					right.Size = UDim2.new(0.5, -half, 0, 1)
+				end
+				lbl:GetPropertyChangedSignal("TextBounds"):Connect(place)
+				place()
+			else
+				create("Frame", {
+					AnchorPoint = Vector2.new(0, 0.5),
+					Position = UDim2.new(0, 0, 0.5, 0),
+					Size = UDim2.new(1, 0, 0, 1),
+					BackgroundColor3 = lineColor,
+					BorderSizePixel = 0,
+				}, holder)
+			end
+			return finish({}, holder, tostring(text or ""), page)
+		end
+
+		-- Proteção contra erros + dicas (Tip = "...") em todos os componentes
+		local function guard(fname)
+			local orig = Sec[fname]
+			local textOk = (fname == "AddInfo" or fname == "AddLabel" or fname == "AddParagraph" or fname == "AddDivider")
+			Sec[fname] = function(self, o, ...)
+				if not textOk and type(o) ~= "table" then
+					warn("[Cindora] " .. fname .. " expects a table, e.g. { Name = \"...\" }")
+					return dummyCtrl()
+				end
+				local okG, res = pcall(orig, self, o, ...)
+				if not okG then
+					warn("[Cindora] " .. fname .. " failed: " .. tostring(res))
+					return dummyCtrl()
+				end
+				if type(o) == "table" and o.Tip and type(res) == "table" and res.Holder then
+					addTip(res.Holder, tostring(o.Tip))
+				end
+				return res
+			end
+		end
+		for _, fname in ipairs({ "AddInfo", "AddLabel", "AddToggle", "AddSlider", "AddDropdown", "AddInput", "AddButton", "AddKeybind", "AddColorPicker", "AddParagraph", "AddDivider" }) do
+			guard(fname)
+		end
+
 		return Sec
 	end
 
@@ -2241,7 +2835,10 @@ function Cindora:CreateWindow(opts)
 	rightCol = column("RightColumn", UDim2.new(1, -COL_W, 0, u(23.5)))
 
 	local sideCounter = { Left = 0, Right = 0 }
+	local sideIcon
 	local function sideButton(text, side, order, onClick)
+		local icon = sideIcon
+		sideIcon = nil
 		side = (side == "Right") and "Right" or "Left"
 		sideCounter[side] += 1
 		local btn, lbl, _, st = gradientButton(side == "Right" and rightCol or leftCol, {
@@ -2253,7 +2850,7 @@ function Cindora:CreateWindow(opts)
 		})
 		create("UITextSizeConstraint", { MaxTextSize = u(10), MinTextSize = 4 }, lbl)
 		create("UIPadding", {
-			PaddingLeft = UDim.new(0, u(3.5)),
+			PaddingLeft = UDim.new(0, icon and u(17) or u(3.5)),
 			PaddingRight = UDim.new(0, u(3.5)),
 			PaddingTop = UDim.new(0, u(3)),
 			PaddingBottom = UDim.new(0, u(3)),
@@ -2262,6 +2859,17 @@ function Cindora:CreateWindow(opts)
 		btn.MouseButton1Click:Connect(function()
 			safeCallback(onClick)
 		end)
+		if icon then
+			create("ImageLabel", {
+				BackgroundTransparency = 1,
+				Image = icon,
+				AnchorPoint = Vector2.new(0, 0.5),
+				Position = UDim2.new(0, u(4), 0.5, 0),
+				Size = UDim2.fromOffset(u(12), u(12)),
+				ScaleType = Enum.ScaleType.Fit,
+				ZIndex = 3,
+			}, btn)
+		end
 		return btn, st
 	end
 
@@ -2274,6 +2882,7 @@ function Cindora:CreateWindow(opts)
 		tabName = tostring(tabName)
 		local Tab = { Name = tabName, Builtin = tabOpts.Builtin }
 		Tab.Page = newPage(tabName)
+		sideIcon = tabOpts.Icon
 		local _, st = sideButton(tabName, tabOpts.Side, tabOpts.Order, function()
 			switchTab(Tab)
 		end)
@@ -2396,6 +3005,63 @@ function Cindora:CreateWindow(opts)
 		return true, L.ConfigReset
 	end
 
+	local AUTOFILE = folder .. "/autoload.txt"
+
+	function Window:SetAutoLoad(cname)
+		if not hasFS then return false end
+		pcall(function()
+			if cname and cname ~= "" then
+				writefile(AUTOFILE, cname)
+			elseif isfile and isfile(AUTOFILE) then
+				delfile(AUTOFILE)
+			end
+		end)
+		return true
+	end
+
+	function Window:GetAutoLoad()
+		local okA, v = pcall(function()
+			if hasFS and isfile and isfile(AUTOFILE) then
+				return readfile(AUTOFILE)
+			end
+		end)
+		if okA and type(v) == "string" and v ~= "" then
+			return v
+		end
+		return nil
+	end
+
+	function Window:LoadAutoConfig(silent)
+		local n = Window:GetAutoLoad()
+		if not n then return false end
+		local okL = Window:LoadConfig(n)
+		if okL and not silent then
+			Window:Notify("Config", "Auto loaded: " .. n, 2.5, "success")
+		end
+		return okL
+	end
+
+	function Window:ExportConfig()
+		local snap = {}
+		for flag, f in pairs(Registry) do
+			snap[flag] = deepCopy(f.get())
+		end
+		return HttpService:JSONEncode(snap)
+	end
+
+	function Window:ImportConfig(text)
+		local okJ, data = pcall(function()
+			return HttpService:JSONDecode(tostring(text or ""))
+		end)
+		if not okJ or type(data) ~= "table" then
+			return false, L.ImportFail
+		end
+		for flag, v in pairs(data) do
+			if Registry[flag] then Registry[flag].set(deepCopy(v)) end
+		end
+		return true, L.ImportOK
+	end
+
 	------------------------------------------------------------
 	-- Botão flutuante + marca d'água
 	------------------------------------------------------------
@@ -2411,28 +3077,46 @@ function Cindora:CreateWindow(opts)
 	floatBtn.Visible = Settings.FloatingButton
 	hoverScale(floatBtn, 1.08, 0.92)
 	do
-		local dragging, moved, dragStart, startPos
+		-- Botão flutuante: só alterna quando o clique COMEÇA no botão, termina
+		-- sem arrastar e respeita um intervalo mínimo (evita abrir/fechar duplo).
+		local pressInput, dragStart, startPos, moved
+		local lastToggle = 0
+
 		floatBtn.InputBegan:Connect(function(input)
-			if isPress(input) then
-				dragging, moved = true, false
+			if isPress(input) and not pressInput then
+				pressInput = input
+				moved = false
 				dragStart = input.Position
 				startPos = floatBtn.Position
-				input.Changed:Connect(function()
-					if input.UserInputState == Enum.UserInputState.End then
-						dragging = false
-						if not moved then Window:Toggle() end
-					end
-				end)
 			end
 		end)
+
 		connect(UIS.InputChanged, function(input)
-			if dragging and isMove(input) then
+			if pressInput and isMove(input) then
 				local d = input.Position - dragStart
-				if d.Magnitude > 5 then moved = true end
+				local limit = (pressInput.UserInputType == Enum.UserInputType.Touch) and 14 or 8
+				if d.Magnitude > limit then
+					moved = true
+				end
 				if moved then
 					floatBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
 				end
 			end
+		end)
+
+		connect(UIS.InputEnded, function(input)
+			if not pressInput or input.UserInputType ~= pressInput.UserInputType then
+				return
+			end
+			pressInput = nil
+			if moved then
+				return
+			end
+			if os.clock() - lastToggle < 0.25 then
+				return
+			end
+			lastToggle = os.clock()
+			Window:Toggle()
 		end)
 	end
 
@@ -2549,6 +3233,18 @@ function Cindora:CreateWindow(opts)
 				searchPanel.BackgroundTransparency = math.max(0, v - 0.2)
 			end,
 		})
+		local themeNames = { "Dark" }
+		local extraThemes = {}
+		for n in pairs(Cindora.Themes) do
+			if n ~= "Dark" then extraThemes[#extraThemes + 1] = n end
+		end
+		table.sort(extraThemes)
+		for _, n in ipairs(extraThemes) do themeNames[#themeNames + 1] = n end
+		ui:AddDropdown({
+			Name = "Theme", Options = themeNames, Default = opts.Theme or "Dark", Flag = "_uiTheme", Search = false,
+			Callback = function(v) Window:SetTheme(v) end,
+		})
+
 		local accentNames = { "Black", "Red", "Orange", "Green", "Blue", "Purple", "Pink" }
 		local extra = {}
 		for n in pairs(Cindora.AccentColors) do
@@ -2586,6 +3282,42 @@ function Cindora:CreateWindow(opts)
 			local _, msg = Window:ResetToDefaults()
 			Window:Notify("Config", msg, 2.5)
 		end })
+
+		mgr:AddButton({ Name = "Set As Auto Load", Callback = function()
+			local sel = cfgDropdown:Get()
+			if not sel then
+				Window:Notify("Config", L.ConfigNone, 2.5, "warning")
+				return
+			end
+			Window:SetAutoLoad(sel)
+			Window:Notify("Config", "Auto load: " .. sel, 2.5, "success")
+		end })
+		mgr:AddButton({ Name = "Clear Auto Load", Callback = function()
+			Window:SetAutoLoad(nil)
+			Window:Notify("Config", "Auto load cleared.", 2.5, "info")
+		end })
+
+		local share = cfgTab:AddSection("Share Config", true)
+		share:AddButton({ Name = "Copy Config To Clipboard", Callback = function()
+			if copyToClipboard(Window:ExportConfig()) then
+				Window:Notify("Config", L.ExportCopied, 2.5, "success")
+			else
+				Window:Notify("Config", L.ClipboardMissing, 2.5, "error")
+			end
+		end })
+		local importText = ""
+		share:AddInput({ Name = "Paste Config", Placeholder = "paste", Callback = function(v) importText = v end })
+		share:AddButton({ Name = "Import Pasted Text", Callback = function()
+			local okI, msg = Window:ImportConfig(importText)
+			Window:Notify("Config", msg, 2.5, okI and "success" or "error")
+		end })
+		if getclipboard then
+			share:AddButton({ Name = "Import From Clipboard", Callback = function()
+				local okC, txt = pcall(getclipboard)
+				local okI, msg = Window:ImportConfig(okC and txt or "")
+				Window:Notify("Config", msg, 2.5, okI and "success" or "error")
+			end })
+		end
 
 		local danger = cfgTab:AddSection("Danger Zone")
 		danger:AddButton({ Name = "Destroy UI", Callback = function() Window:Destroy() end })
@@ -2631,6 +3363,17 @@ function Cindora:CreateWindow(opts)
 		if i then table.remove(Cindora.Windows, i) end
 	end
 
+	if opts.Theme then
+		Window:SetTheme(opts.Theme)
+	end
+	if opts.AutoLoad ~= false then
+		task.defer(function()
+			task.wait(0.5) -- espera o script do usuário terminar de criar os componentes
+			if gui.Parent then
+				Window:LoadAutoConfig(true)
+			end
+		end)
+	end
 	if opts.Accent then
 		Window:SetAccent(opts.Accent)
 	end
