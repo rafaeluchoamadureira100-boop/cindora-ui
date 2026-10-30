@@ -1,6 +1,6 @@
 --[[
 	==========================================================================
-	CINDORA UI LIBRARY  v1.1
+	CINDORA UI LIBRARY  v1.2
 	==========================================================================
 
 	USO RÁPIDO
@@ -80,7 +80,7 @@ local lp = Players.LocalPlayer
 local playerGui = lp:WaitForChild("PlayerGui")
 
 local Cindora = {}
-Cindora.Version = "1.1"
+Cindora.Version = "1.2"
 Cindora.Windows = {}
 
 -- Textos da interface (edite para traduzir)
@@ -232,11 +232,11 @@ end
 
 local function copyToClipboard(str)
 	local fn = setclipboard or toclipboard or (syn and syn.write_clipboard) or (Clipboard and Clipboard.set)
-	if fn then
-		pcall(fn, str)
-		return true
+	if type(fn) ~= "function" then
+		return false
 	end
-	return false
+	local ok, result = pcall(fn, str)
+	return ok and result ~= false
 end
 
 local function safeName(s)
@@ -2945,7 +2945,13 @@ function Cindora:CreateWindow(opts)
 		return t
 	end
 
+	local function normalizeConfigName(cname)
+		return string.sub(string.gsub(tostring(cname or ""), "[^%w_%-]", ""), 1, 32)
+	end
+
 	local function readCfg(cname)
+		cname = normalizeConfigName(cname)
+		if cname == "" then return nil end
 		if Configs[cname] then return Configs[cname] end
 		if hasFS then
 			local ok, data = pcall(function()
@@ -2957,7 +2963,7 @@ function Cindora:CreateWindow(opts)
 	end
 
 	function Window:SaveConfig(cname)
-		cname = string.sub((string.gsub(tostring(cname or ""), "[^%w_%-]", "")), 1, 32)
+		cname = normalizeConfigName(cname)
 		if cname == "" then cname = "default" end
 		local names = Window:GetConfigs()
 		if not table.find(names, cname) and #names >= MAX_CFGS then
@@ -2977,7 +2983,8 @@ function Cindora:CreateWindow(opts)
 	end
 
 	function Window:LoadConfig(cname)
-		local snap = cname and readCfg(cname)
+		cname = normalizeConfigName(cname)
+		local snap = cname ~= "" and readCfg(cname) or nil
 		if not snap then
 			return false, L.ConfigNone
 		end
@@ -2988,13 +2995,17 @@ function Cindora:CreateWindow(opts)
 	end
 
 	function Window:DeleteConfig(cname)
-		if not cname then
+		cname = normalizeConfigName(cname)
+		if cname == "" then
 			return false, L.ConfigNone
 		end
-		Configs[cname] = nil
-		if hasFS then
-			pcall(function() delfile(DIR .. "/" .. cname .. ".json") end)
+		if hasFS and isfile and isfile(DIR .. "/" .. cname .. ".json") then
+			local ok = pcall(delfile, DIR .. "/" .. cname .. ".json")
+			if not ok then
+				return false, L.ConfigNone
+			end
 		end
+		Configs[cname] = nil
 		return true, string.format(L.ConfigDeleted, cname)
 	end
 
@@ -3009,14 +3020,16 @@ function Cindora:CreateWindow(opts)
 
 	function Window:SetAutoLoad(cname)
 		if not hasFS then return false end
-		pcall(function()
-			if cname and cname ~= "" then
-				writefile(AUTOFILE, cname)
+		local normalized = cname and normalizeConfigName(cname) or ""
+		if cname and cname ~= "" and normalized == "" then return false end
+		local ok = pcall(function()
+			if normalized ~= "" then
+				writefile(AUTOFILE, normalized)
 			elseif isfile and isfile(AUTOFILE) then
 				delfile(AUTOFILE)
 			end
 		end)
-		return true
+		return ok
 	end
 
 	function Window:GetAutoLoad()
@@ -3025,8 +3038,9 @@ function Cindora:CreateWindow(opts)
 				return readfile(AUTOFILE)
 			end
 		end)
-		if okA and type(v) == "string" and v ~= "" then
-			return v
+		if okA and type(v) == "string" then
+			v = normalizeConfigName(v)
+			if v ~= "" then return v end
 		end
 		return nil
 	end
